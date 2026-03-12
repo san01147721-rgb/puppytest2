@@ -9,58 +9,93 @@ import LiveStream from "@/components/LiveStream";
 import MetricCard from "@/components/MetricCard";
 import HardwareButtons from "@/components/HardwareButtons";
 import ActivityTimeline from "@/components/ActivityTimeline";
+import ScheduleManager from "@/components/ScheduleManager";
 
 export default function DashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState({
-    food: 345,
-    water: 12,
-    activity: "활발함",
+    food: 0,
+    water: 0,
+    activity: "데이터 분석 중...",
   });
+
+  const fetchTodayStats = async () => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayISO = today.toISOString();
+      
+      console.log("Fetching stats from 'device_commands' table...");
+
+      const { data, error, status, statusText } = await supabase
+        .from("device_commands")
+        .select("action_type, created_at")
+        .gte("created_at", todayISO);
+
+      if (error) {
+        console.error("Supabase Error Details:", {
+          status,
+          statusText,
+          message: error.message,
+          code: error.code,
+          hint: error.hint,
+          details: error.details
+        });
+        
+        // 만약 테이블이 없다면(404), 사용자에게 안내
+        if (status === 404) {
+          console.error("CRITICAL: 'device_commands' table not found. Did you run the migration?");
+        }
+        throw error;
+      }
+
+      console.log(`Successfully fetched ${data?.length || 0} records.`);
+
+      if (data) {
+        const foodCount = data.filter(d => d.action_type === 'feed_snack').length;
+        const waterCount = data.filter(d => d.action_type === 'fill_water').length;
+
+        setMetrics(prev => ({
+          ...prev,
+          food: foodCount * 15,
+          water: waterCount,
+        }));
+      }
+    } catch (error: any) {
+      // 에러 객체가 빈 상태로 출력되는 것을 방지하기 위해 속성을 직접 출력
+      console.error("Error fetching stats - Full Object:", JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+    }
+  };
 
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
-        // Redirect to login if not authenticated
         router.push("/login");
       } else {
         setLoading(false);
+        // 인증 성공 후 데이터 페칭
+        fetchTodayStats();
       }
     };
 
     checkAuth();
 
-    // Fetch initial metrics
-    const fetchMetrics = async () => {
-      const { data, error } = await supabase
-        .from("pet_metrics")
-        .select("*")
-        .single();
-      
-      if (data) {
-        setMetrics({
-          food: data.food_amount,
-          water: data.water_count,
-          activity: data.activity_status,
-        });
-      }
-    };
-
-    fetchMetrics();
-
-    // Subscribe to realtime changes in metrics
+    // Subscribe to realtime changes in device_commands
     const channel = supabase
-      .channel("metrics_realtime")
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "pet_metrics" }, (payload) => {
-        setMetrics({
-          food: payload.new.food_amount,
-          water: payload.new.water_count,
-          activity: payload.new.activity_status,
-        });
+      .channel("commands_realtime")
+      .on("postgres_changes", { 
+        event: "INSERT", 
+        schema: "public", 
+        table: "device_commands" 
+      }, (payload) => {
+        console.log("Realtime INSERT detected:", payload);
+        fetchTodayStats();
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log("Realtime subscription status:", status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -92,14 +127,20 @@ export default function DashboardPage() {
               title="오늘 먹은 사료량"
               value={metrics.food}
               unit="g"
-              progress={70}
+              progress={Math.min((metrics.food / 200) * 100, 100)}
             />
             <MetricCard 
               type="water"
               title="물 마신 횟수"
               value={metrics.water}
               unit="회"
-              subtitle="평소보다 2회 더 마셨어요"
+              subtitle={
+                metrics.water === 0 
+                  ? "아직 물을 마시지 않았어요 💧" 
+                  : metrics.water <= 3 
+                    ? "조금씩 수분을 보충하고 있어요 🐾" 
+                    : "오늘 수분 충전 완벽해요! ✨"
+              }
             />
             <MetricCard 
               type="activity"
@@ -109,7 +150,9 @@ export default function DashboardPage() {
             />
           </div>
           
-          <HardwareButtons />
+          <HardwareButtons onCommandSuccess={fetchTodayStats} />
+          
+          <ScheduleManager />
         </div>
         
         {/* Sidebar / Timeline Area */}

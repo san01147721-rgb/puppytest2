@@ -2,46 +2,87 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { Utensils, Droplets, Activity, Sun, Moon } from "lucide-react";
+import { Utensils, Droplets, Activity, Sun, Moon, Camera, Bell } from "lucide-react";
 
 interface ActivityLog {
   id: string;
-  type: "food" | "water" | "activity" | "snack" | "wake";
+  type: string;
   time: string;
   description: string;
 }
 
 export default function ActivityTimeline() {
-  const [logs, setLogs] = useState<ActivityLog[]>([
-    { id: "1", type: "food", time: "12:30 PM", description: "킁킁이가 밥을 먹으러 왔어요 (15g 섭취)" },
-    { id: "2", type: "water", time: "11:45 AM", description: "수분 섭취 감지됨" },
-    { id: "3", type: "activity", time: "10:15 AM", description: "활동량이 증가했습니다 (우다다 타임)" },
-    { id: "4", type: "snack", time: "09:00 AM", description: "예약된 오전 간식이 지급되었습니다" },
-    { id: "5", type: "wake", time: "08:30 AM", description: "킁킁이가 잠에서 깨어났습니다" },
-  ]);
+  const [logs, setLogs] = useState<ActivityLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // 시간 포맷팅 유틸리티: '오전 10:15' 형식
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+  };
+
+  // DB의 event_type을 UI용 type으로 매핑
+  const mapEventType = (eventType: string) => {
+    switch (eventType) {
+      case "feed": return "food";
+      case "water": return "water";
+      case "motion": return "activity";
+      case "camera_view": return "camera";
+      case "snack": return "snack";
+      default: return "activity";
+    }
+  };
+
+  const fetchLogs = async () => {
+    const { data, error } = await supabase
+      .from("activity_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(6);
+    
+    if (error) {
+      console.error("Error fetching logs:", error);
+      return;
+    }
+
+    if (data) {
+      const formattedLogs = data.map((log: any) => ({
+        id: log.id,
+        type: mapEventType(log.event_type),
+        time: formatTime(log.created_at),
+        description: log.description || "",
+      }));
+      setLogs(formattedLogs);
+    }
+    setIsLoading(false);
+  };
 
   useEffect(() => {
-    const fetchLogs = async () => {
-      const { data, error } = await supabase
-        .from("activity_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(10);
-      
-      if (data) {
-        // Transform data if needed
-        // setLogs(data.map(...));
-      }
-    };
-
     fetchLogs();
 
+    // Supabase 실시간 구독 설정
     const channel = supabase
       .channel("activity_logs_realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "activity_logs" }, (payload) => {
-        console.log("Realtime update:", payload);
-        fetchLogs();
-      })
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "activity_logs" },
+        (payload) => {
+          const newLog = payload.new as any;
+          const formattedNewLog = {
+            id: newLog.id,
+            type: mapEventType(newLog.event_type),
+            time: formatTime(newLog.created_at),
+            description: newLog.description || "",
+          };
+
+          // 새 항목을 리스트 맨 위에 추가하고 최대 6개 유지
+          setLogs((prev) => [formattedNewLog, ...prev].slice(0, 6));
+        }
+      )
       .subscribe();
 
     return () => {
@@ -55,8 +96,9 @@ export default function ActivityTimeline() {
       case "water": return <Droplets className="w-4 h-4" />;
       case "activity": return <Activity className="w-4 h-4" />;
       case "snack": return <Sun className="w-4 h-4" />;
+      case "camera": return <Camera className="w-4 h-4" />;
       case "wake": return <Moon className="w-4 h-4" />;
-      default: return <Activity className="w-4 h-4" />;
+      default: return <Bell className="w-4 h-4" />;
     }
   };
 
@@ -66,6 +108,7 @@ export default function ActivityTimeline() {
       case "water": return "bg-blue-500";
       case "activity": return "bg-green-500";
       case "snack": return "bg-amber-500";
+      case "camera": return "bg-purple-500";
       case "wake": return "bg-indigo-400";
       default: return "bg-gray-400";
     }
@@ -80,20 +123,31 @@ export default function ActivityTimeline() {
         <button className="text-sm font-medium text-orange-400 hover:text-orange-500">전체보기</button>
       </div>
 
-      <div className="flex-1 space-y-8 relative">
-        <div className="absolute left-[15px] top-6 bottom-6 w-[2px] bg-orange-100" />
-        
-        {logs.map((log) => (
-          <div key={log.id} className="flex gap-6 relative">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white z-10 ${getIconColor(log.type)}`}>
-              {getIcon(log.type)}
-            </div>
-            <div>
-              <div className="text-sm font-bold text-gray-800 mb-1">{log.time}</div>
-              <div className="text-sm text-gray-500 leading-relaxed">{log.description}</div>
-            </div>
+      <div className="flex-1 space-y-8 relative overflow-y-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
+            데이터를 불러오는 중...
           </div>
-        ))}
+        ) : logs.length > 0 ? (
+          <>
+            <div className="absolute left-[15px] top-6 bottom-6 w-[2px] bg-orange-100" />
+            {logs.map((log) => (
+              <div key={log.id} className="flex gap-6 relative animate-in fade-in slide-in-from-top-4 duration-500">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white z-10 ${getIconColor(log.type)}`}>
+                  {getIcon(log.type)}
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-gray-800 mb-1">{log.time}</div>
+                  <div className="text-sm text-gray-500 leading-relaxed">{log.description}</div>
+                </div>
+              </div>
+            ))}
+          </>
+        ) : (
+          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
+            아직 최근 활동이 없습니다
+          </div>
+        )}
       </div>
 
       <div className="mt-auto pt-8">
